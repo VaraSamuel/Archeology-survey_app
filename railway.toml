@@ -1,19 +1,7 @@
-# Railroad deployment configuration
-# This file helps Railway understand how to deploy the app
-
-# Use Python 3.10+
-root = "/Users/samuelvara/Downloads/Field_Notes_Ethnography"
-
-# The working directory for the app
-cd = "/"
-
 [build]
-  # Install dependencies
-  builder = "nixpacks"
+builder = "NIXPACKS"
 
 [deploy]
-  # Run the FastAPI server
-  # Railway will automatically set $PORT environment variable
-  command = "python note_organizer/web_app.py"
-  restartPolicyType = "always"
-  restartPolicyMaxRetries = 5
+startCommand = "python note_organizer/web_app.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

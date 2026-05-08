@@ -1,6 +1,11 @@
+Flask
+pandas
+openpyxl
+python-docx
+PyPDF2
+gunicorn
 fastapi
 uvicorn
-python-docx
 spacy
 openai
 python-dotenv
