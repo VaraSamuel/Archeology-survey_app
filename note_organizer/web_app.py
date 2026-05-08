@@ -70,9 +70,13 @@ def load_or_scan_index() -> Dict[str, Any]:
 
     except Exception as exc:
         print(f"Scanning notes from parent directory... ({exc})")
-        data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
-        print(f"Indexed {data.get('note_count', 0)} notes")
-        return data
+        try:
+            data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
+            print(f"Indexed {data.get('note_count', 0)} notes")
+            return data
+        except Exception as scan_exc:
+            print(f"Scan failed: {scan_exc}")
+            return {"root": str(PROJECT_ROOT), "note_count": 0, "notes": []}
 
 
 def rebuild_note_id_map() -> None:

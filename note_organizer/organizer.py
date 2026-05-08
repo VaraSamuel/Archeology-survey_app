@@ -118,17 +118,22 @@ def extract_keyword_tags(text: str) -> set[str]:
 def extract_spacy_tags(text: str, max_tags: int = 8) -> set[str]:
     if nlp is None:
         return set()
-    doc = nlp(text[:10000])
-    candidates = {}
-    for chunk in doc.noun_chunks:
-        token = chunk.text.strip().lower()
-        if len(token) < 3 or len(token) > 30:
-            continue
-        if token.isnumeric():
-            continue
-        candidates[token] = candidates.get(token, 0) + 1
-    sorted_tags = sorted(candidates.items(), key=lambda item: (-item[1], len(item[0])))
-    return {tag for tag, _ in sorted_tags[:max_tags]}
+
+    try:
+        doc = nlp(text[:10000])
+        candidates = {}
+        for chunk in doc.noun_chunks:
+            token = chunk.text.strip().lower()
+            if len(token) < 3 or len(token) > 30:
+                continue
+            if token.isnumeric():
+                continue
+            candidates[token] = candidates.get(token, 0) + 1
+        sorted_tags = sorted(candidates.items(), key=lambda item: (-item[1], len(item[0])))
+        return {tag for tag, _ in sorted_tags[:max_tags]}
+    except Exception:
+        # spaCy parser/model may not be installed in the deployment environment.
+        return set()
 
 
 def make_excerpt(text: str, max_chars: int = 240) -> str:
