@@ -16,6 +16,7 @@ import io
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
 import urllib.parse
 import tempfile
@@ -235,6 +236,49 @@ _DRIVE_MIME_TO_EXT = {
 }
 
 
+def _extract_doc_bytes(raw: bytes, filename: str) -> str:
+    """Extract text from a legacy .doc file given its raw bytes.
+
+    Tries antiword first (Linux/Railway), then macOS textutil as a fallback.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        doc_path = Path(tmpdir) / filename
+
+        try:
+            doc_path.write_bytes(raw)
+        except Exception as exc:
+            return f"Could not write temp file: {exc}"
+
+        # Try antiword (available on Linux after nixpacks installs it)
+        if shutil.which("antiword"):
+            try:
+                result = subprocess.run(
+                    ["antiword", str(doc_path)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except Exception:
+                pass
+
+        # Try macOS textutil
+        if shutil.which("textutil"):
+            try:
+                out_path = Path(tmpdir) / "out.txt"
+                result = subprocess.run(
+                    ["textutil", "-convert", "txt", str(doc_path), "-output", str(out_path)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode == 0 and out_path.exists():
+                    text = out_path.read_text(encoding="utf-8", errors="replace").strip()
+                    if text:
+                        return text
+            except Exception:
+                pass
+
+    return "Could not extract text from this .doc file (antiword not available). Use Download to open it."
+
+
 def fetch_drive_bytes(note: Dict[str, Any]) -> tuple:
     """Download a note from Drive. Returns (bytes, effective_mime, filename)."""
     if not drive_client:
@@ -304,6 +348,10 @@ def preview_note_from_drive(note: Dict[str, Any]) -> Dict[str, Any]:
         else:
             content = "python-docx is not installed; cannot preview .docx files."
         preview_type, can_inline_preview = "docx-text", True
+
+    elif suffix == ".doc":
+        content = _extract_doc_bytes(raw, name)
+        preview_type, can_inline_preview = "legacy-doc-text", True
 
     else:
         content = (
