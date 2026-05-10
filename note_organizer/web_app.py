@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import subprocess
+import urllib.parse
 import tempfile
 import zipfile
 from pathlib import Path
@@ -473,6 +474,13 @@ def make_safe_filename(name: str) -> str:
     return cleaned.strip("_") or "download"
 
 
+def content_disposition(disposition: str, filename: str) -> str:
+    """Build a Content-Disposition header that safely handles non-ASCII filenames."""
+    ascii_fallback = filename.encode("ascii", errors="replace").decode("ascii")
+    encoded = urllib.parse.quote(filename, safe="")
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+
+
 # ------------------------------------------------------------
 # Initialize data
 # ------------------------------------------------------------
@@ -697,7 +705,7 @@ async def open_raw_note(note_id: str):
         return StreamingResponse(
             iter([data]),
             media_type=eff_mime,
-            headers={"Content-Disposition": f'inline; filename="{name}"'},
+            headers={"Content-Disposition": content_disposition("inline", name)},
         )
 
     path = get_note_path_or_404(note_id)
@@ -719,7 +727,7 @@ async def download_note(note_id: str):
         return StreamingResponse(
             iter([data]),
             media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+            headers={"Content-Disposition": content_disposition("attachment", name)},
         )
 
     path = get_note_path_or_404(note_id)
@@ -727,7 +735,7 @@ async def download_note(note_id: str):
         path=str(path),
         media_type="application/octet-stream",
         filename=path.name,
-        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+        headers={"Content-Disposition": content_disposition("attachment", path.name)},
     )
 
 
