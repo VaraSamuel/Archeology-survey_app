@@ -15,6 +15,7 @@ import html
 import io
 import json
 import mimetypes
+import os
 import subprocess
 import tempfile
 import zipfile
@@ -26,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 import uvicorn
 
 from backend import EthnographicAnalyzer, NoteService
-from organizer import load_index, scan_notes
+from organizer import load_index, scan_notes, scan_notes_from_drive
 
 try:
     import docx
@@ -47,6 +48,16 @@ BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 INDEX_PATH = BASE_DIR / "notes_index.json"
 
+DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "1Euk4YpPVaYgWFjHuI3g9IJ4vKT-e2mbL")
+
+try:
+    from drive_client import DriveClient
+    drive_client = DriveClient()
+    print("Google Drive client initialized")
+except Exception as _drive_exc:
+    print(f"Google Drive not available: {_drive_exc}")
+    drive_client = None
+
 index_data: Dict[str, Any] = {}
 note_id_map: Dict[str, Dict[str, Any]] = {}
 
@@ -56,27 +67,32 @@ note_id_map: Dict[str, Dict[str, Any]] = {}
 # ------------------------------------------------------------
 
 def load_or_scan_index() -> Dict[str, Any]:
-    """Load notes_index.json if available, otherwise scan the parent library."""
+    """Load cached index if available, otherwise scan from Google Drive."""
     try:
         if INDEX_PATH.exists():
             data = load_index(str(INDEX_PATH))
-        else:
-            raise FileNotFoundError("notes_index.json not found")
-
-        if not data or not data.get("notes"):
-            raise FileNotFoundError("notes_index.json is empty or invalid")
-
-        return data
-
+            # Only use cached index if it came from Drive (has drive_id on notes)
+            if data and data.get("notes") and data.get("source") == "google_drive":
+                return data
     except Exception as exc:
-        print(f"Scanning notes from parent directory... ({exc})")
+        print(f"Could not load cached index: {exc}")
+
+    if drive_client:
+        print(f"Scanning notes from Google Drive folder {DRIVE_FOLDER_ID}...")
         try:
-            data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
-            print(f"Indexed {data.get('note_count', 0)} notes")
+            data = scan_notes_from_drive(DRIVE_FOLDER_ID, drive_client, str(INDEX_PATH))
             return data
-        except Exception as scan_exc:
-            print(f"Scan failed: {scan_exc}")
-            return {"root": str(PROJECT_ROOT), "note_count": 0, "notes": []}
+        except Exception as exc:
+            print(f"Drive scan failed: {exc}")
+
+    print("Falling back to local filesystem scan...")
+    try:
+        data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
+        print(f"Indexed {data.get('note_count', 0)} notes")
+        return data
+    except Exception as exc:
+        print(f"Local scan failed: {exc}")
+        return {"root": str(PROJECT_ROOT), "note_count": 0, "notes": []}
 
 
 def rebuild_note_id_map() -> None:
@@ -210,9 +226,114 @@ def extract_doc_text_mac(path: Path) -> str:
         )
 
 
+_DRIVE_MIME_TO_EXT = {
+    "text/plain": ".txt",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/msword": ".doc",
+    "application/vnd.google-apps.document": ".docx",
+}
+
+
+def fetch_drive_bytes(note: Dict[str, Any]) -> tuple:
+    """Download a note from Drive. Returns (bytes, effective_mime, filename)."""
+    if not drive_client:
+        raise HTTPException(status_code=503, detail="Google Drive not configured")
+    drive_id = note.get("drive_id")
+    if not drive_id:
+        raise HTTPException(status_code=404, detail="No Drive ID for this note")
+    mime = note.get("drive_mime_type", "application/octet-stream")
+    data = drive_client.download_bytes(drive_id, mime)
+    name = note.get("title", "file")
+    if mime == "application/vnd.google-apps.document" and not name.lower().endswith(".docx"):
+        name = name + ".docx"
+        eff_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    else:
+        eff_mime = mime
+    return data, eff_mime, name
+
+
+def preview_note_from_drive(note: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract preview text for a Drive-backed note."""
+    note_id = note["id"]
+    mime = note.get("drive_mime_type", "")
+    suffix = _DRIVE_MIME_TO_EXT.get(mime, Path(note.get("title", "")).suffix.lower())
+    name = note.get("title", "file")
+
+    try:
+        raw, _, filename = fetch_drive_bytes(note)
+    except HTTPException as exc:
+        return {
+            "id": note_id, "title": name, "year": note.get("year", "Unknown"),
+            "source": note.get("source", "unknown"), "tags": note.get("tags", []),
+            "excerpt": note.get("excerpt", ""), "path": note.get("path", ""),
+            "filename": name, "extension": suffix, "preview_type": "error",
+            "can_inline_preview": False, "content": f"Could not download from Drive: {exc.detail}",
+        }
+
+    if suffix == ".txt":
+        content = None
+        for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+            try:
+                content = raw.decode(enc)
+                break
+            except Exception:
+                continue
+        content = content or raw.decode("utf-8", errors="replace")
+        preview_type, can_inline_preview = "text", True
+
+    elif suffix == ".docx":
+        if docx is not None:
+            try:
+                doc = docx.Document(io.BytesIO(raw))
+                paragraphs = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+                table_lines = []
+                for table in doc.tables:
+                    for row in table.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                        if cells:
+                            table_lines.append(" | ".join(cells))
+                parts = []
+                if paragraphs:
+                    parts.append("\n\n".join(paragraphs))
+                if table_lines:
+                    parts.append("\n\nTABLE CONTENT\n" + "\n".join(table_lines))
+                content = "\n\n".join(parts).strip() or "(No readable text found.)"
+            except Exception as exc:
+                content = f"Could not read .docx file: {exc}"
+        else:
+            content = "python-docx is not installed; cannot preview .docx files."
+        preview_type, can_inline_preview = "docx-text", True
+
+    else:
+        content = (
+            f"Preview is not available for {suffix or 'this file type'}.\n\n"
+            "Use the Download button to open the original file."
+        )
+        preview_type, can_inline_preview = "unsupported", False
+
+    return {
+        "id": note_id,
+        "title": name,
+        "year": note.get("year", "Unknown"),
+        "source": note.get("source", suffix.lstrip(".") or "unknown"),
+        "tags": note.get("tags", []),
+        "excerpt": note.get("excerpt", ""),
+        "path": note.get("path", ""),
+        "filename": filename if suffix == ".docx" and mime == "application/vnd.google-apps.document" else name,
+        "extension": suffix,
+        "preview_type": preview_type,
+        "can_inline_preview": can_inline_preview,
+        "content": content,
+    }
+
+
 def preview_note_text(note_id: str) -> Dict[str, Any]:
     """Return preview text and metadata for a note."""
     note = get_note_or_404(note_id)
+
+    if note.get("drive_id"):
+        return preview_note_from_drive(note)
+
     path = get_note_path_or_404(note_id)
     suffix = path.suffix.lower()
 
@@ -310,20 +431,29 @@ def make_zip_response(notes: List[Dict[str, Any]], filename: str) -> StreamingRe
 
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for note in notes:
+            year = note.get("year", "Unknown")
+            drive_id = note.get("drive_id")
+
+            if drive_id and drive_client:
+                mime = note.get("drive_mime_type", "application/octet-stream")
+                name = note.get("title", "file")
+                if mime == "application/vnd.google-apps.document" and not name.lower().endswith(".docx"):
+                    name = name + ".docx"
+                try:
+                    data = drive_client.download_bytes(drive_id, mime)
+                    zf.writestr(f"{year}/{name}", data)
+                except Exception as exc:
+                    print(f"ZIP: could not download {name}: {exc}")
+                continue
+
             raw_path = note.get("path")
             if not raw_path:
                 continue
-
             path = Path(raw_path).expanduser().resolve()
-
             if not path.exists() or not path.is_file():
                 continue
-
-            year = note.get("year") if note.get("year") != "Unknown" else "Unknown"
-            archive_name = f"{year}/{path.name}"
-
             try:
-                zf.write(path, arcname=archive_name)
+                zf.write(path, arcname=f"{year}/{path.name}")
             except Exception:
                 continue
 
@@ -559,32 +689,45 @@ async def view_note_page(note_id: str):
 
 @app.get("/api/note/{note_id}/raw")
 async def open_raw_note(note_id: str):
-    """
-    Open the original file directly.
-    Browser behavior depends on file type:
-    - .txt usually opens inline
-    - .docx/.doc usually download or open externally
-    """
+    """Open the original file directly in the browser."""
+    note = get_note_or_404(note_id)
+
+    if note.get("drive_id"):
+        data, eff_mime, name = fetch_drive_bytes(note)
+        return StreamingResponse(
+            iter([data]),
+            media_type=eff_mime,
+            headers={"Content-Disposition": f'inline; filename="{name}"'},
+        )
+
     path = get_note_path_or_404(note_id)
     media_type, _ = mimetypes.guess_type(str(path))
-
     return FileResponse(
         path=str(path),
         media_type=media_type or "application/octet-stream",
-        filename=path.name
+        filename=path.name,
     )
 
 
 @app.get("/api/note/{note_id}/download")
 async def download_note(note_id: str):
     """Download original note file."""
-    path = get_note_path_or_404(note_id)
+    note = get_note_or_404(note_id)
 
+    if note.get("drive_id"):
+        data, _, name = fetch_drive_bytes(note)
+        return StreamingResponse(
+            iter([data]),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{name}"'},
+        )
+
+    path = get_note_path_or_404(note_id)
     return FileResponse(
         path=str(path),
         media_type="application/octet-stream",
         filename=path.name,
-        headers={"Content-Disposition": f'attachment; filename="{path.name}"'}
+        headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
     )
 
 
@@ -617,10 +760,14 @@ async def download_year(year: str):
 
 @app.post("/api/rescan")
 async def rescan():
-    """Rescan the notes directory and rebuild the index."""
+    """Rescan notes from Google Drive (or local filesystem) and rebuild the index."""
     global index_data
 
-    index_data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
+    if drive_client:
+        index_data = scan_notes_from_drive(DRIVE_FOLDER_ID, drive_client, str(INDEX_PATH))
+    else:
+        index_data = scan_notes(str(PROJECT_ROOT), str(INDEX_PATH))
+
     rebuild_note_id_map()
 
     return {

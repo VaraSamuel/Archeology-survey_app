@@ -234,3 +234,95 @@ def load_index(index_path: str | Path = "notes_index.json") -> dict:
     if not path.exists():
         return {"root": "", "note_count": 0, "notes": []}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+_MIME_TO_EXT = {
+    "text/plain": ".txt",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/msword": ".doc",
+    "application/vnd.google-apps.document": ".docx",
+}
+
+
+def scan_notes_from_drive(folder_id: str, drive_client, index_path: str | Path = "notes_index.json") -> dict:
+    """List and index all supported files from a Google Drive folder tree."""
+    import io as _io
+
+    print(f"Listing files from Google Drive folder {folder_id}...")
+    files = drive_client.list_files_recursive(folder_id)
+    print(f"Found {len(files)} files in Drive")
+
+    notes = []
+    for i, file_info in enumerate(files, start=1):
+        name = file_info["name"]
+        drive_id = file_info["id"]
+        mime_type = file_info["mime_type"]
+        drive_path = file_info["drive_path"]
+
+        if name.startswith("~$"):
+            continue
+
+        ext = _MIME_TO_EXT.get(mime_type, Path(name).suffix.lower() or ".txt")
+
+        try:
+            raw_bytes = drive_client.download_bytes(drive_id, mime_type)
+
+            if ext == ".txt":
+                text = None
+                for encoding in ("utf-8", "latin-1", "cp1252"):
+                    try:
+                        text = raw_bytes.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                text = text or ""
+            elif ext == ".docx":
+                if docx is not None:
+                    try:
+                        doc = docx.Document(_io.BytesIO(raw_bytes))
+                        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+                        text = "\n\n".join(paragraphs)
+                    except Exception:
+                        text = ""
+                else:
+                    text = ""
+            else:
+                text = ""
+        except Exception as exc:
+            print(f"  Warning: could not read {name}: {exc}")
+            text = ""
+
+        text = normalize_text(text)
+        path_obj = Path(drive_path)
+        tags = get_tags_for_note(name, text, path_obj)
+        tags.update(extract_keyword_tags(text))
+        tags.update(extract_spacy_tags(text))
+
+        note = {
+            "title": name,
+            "path": drive_path,
+            "drive_id": drive_id,
+            "drive_mime_type": mime_type,
+            "year": infer_year(path_obj),
+            "tags": sorted(tags),
+            "excerpt": make_excerpt(text),
+            "source": ext.lstrip("."),
+        }
+        notes.append(note)
+        print(f"  [{i}/{len(files)}] {name}")
+
+    index = {
+        "root": f"gdrive://{folder_id}",
+        "note_count": len(notes),
+        "notes": notes,
+        "source": "google_drive",
+        "folder_id": folder_id,
+    }
+
+    try:
+        Path(index_path).write_text(json.dumps(index, indent=2, ensure_ascii=False))
+    except Exception as exc:
+        print(f"Warning: could not cache index to disk: {exc}")
+
+    print(f"Indexed {len(notes)} notes from Drive")
+    return index

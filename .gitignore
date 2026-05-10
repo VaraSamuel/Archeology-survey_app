@@ -56,6 +56,7 @@ openai_key.txt
 api_key.txt
 credentials.json
 secrets.json
+service_account.json
 
 # Cache files
 .pytest_cache/
