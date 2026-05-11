@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -30,19 +29,73 @@ except ImportError:
 SUPPORTED_EXTENSIONS = [".txt", ".docx", ".doc"]
 
 TAG_PATTERNS = {
-    "ethnicity": [r"ethnic", r"ethnicity", r"kurd", r"turk", r"alevi", r"y[öo]rük", r"roma", r"circass", r"armen", r"arab"],
-    "herding": [r"herd", r"sheep", r"cattle", r"goat", r"grazing", r"shepherd", r"flock", r"pastur"],
-    "agriculture": [r"farm", r"farming", r"crop", r"wheat", r"barley", r"soil", r"tractor", r"plow", r"planting", r"harvest"],
-    "household": [r"cook", r"kitchen", r"dairy", r"cheese", r"butter", r"milk", r"home", r"household", r"family"],
-    "migration": [r"migrat", r"settle", r"move", r"village", r"relocat", r"immigrant"],
-    "social": [r"married", r"wife", r"husband", r"son", r"daughter", r"visit", r"wife", r"men", r"women", r"cousin"],
-    "burial": [r"burial", r"grave", r"funeral", r"cemeter", r"buried"],
-    "religion": [r"mosque", r"church", r"prayer", r"religion", r"islam", r"muslim", r"christian", r"alevi"],
-    "economy": [r"tax", r"price", r"market", r"income", r"money", r"cost", r"sell", r"buy"],
-    "archaeology": [r"excavation", r"excavate", r"trench", r"stratigraphy", r"context", r"layer", r"dig", r"survey", r"site", r"artifact", r"pottery", r"lithic", r"ceramic", r"bone", r"architecture"],
-    "artifacts": [r"artifact", r"artifacts", r"pottery", r"ceramic", r"lithic", r"tool", r"vessel", r"ornament", r"bead", r"metal", r"shard", r"bone"],
-    "architecture": [r"building", r"wall", r"house", r"structure", r"ruin", r"room", r"foundation", r"mudbrick", r"stone", r"architecture", r"settlement"],
-    "landscape": [r"landscape", r"topography", r"hill", r"valley", r"mound", r"survey", r"plain", r"plateau", r"terrace", r"site"],
+    "ethnicity": [
+        r"ethnic", r"ethnicity", r"kurd", r"turk", r"alevi", r"y[öo]rük", r"roma", r"circass", r"armen", r"arab",
+        r"kürt", r"çerkes", r"göçebe", r"boşnak", r"rum", r"tatar", r"laz",
+    ],
+    "herding": [
+        r"herd", r"sheep", r"cattle", r"goat", r"grazing", r"shepherd", r"flock", r"pastur",
+        r"livestock", r"sheepfold", r"fold", r"animal husbandry",
+        r"hayvancılık", r"koyun", r"keçi", r"inek", r"sığır", r"sürü",
+        r"ağıl", r"mera", r"otlak", r"davar", r"büyükbaş", r"küçükbaş", r"çoban",
+    ],
+    "agriculture": [
+        r"farm", r"farming", r"crop", r"wheat", r"barley", r"soil", r"tractor", r"plow", r"planting", r"harvest",
+        r"irrigation", r"field", r"seed", r"agr",
+        r"tarım", r"buğday", r"arpa", r"ekim", r"hasat", r"tarla",
+        r"sulama", r"çiftçi", r"bahçe", r"pancar", r"traktör",
+    ],
+    "household": [
+        r"cook", r"kitchen", r"dairy", r"cheese", r"butter", r"milk", r"home", r"household", r"family",
+        r"\bHH\b",
+        r"mutfak", r"peynir", r"tereyağ", r"yoğurt", r"yemek", r"hane",
+    ],
+    "migration": [
+        r"migrat", r"settle", r"move", r"village", r"relocat", r"immigrant", r"seasonal", r"nomad",
+        r"göç", r"yerleş", r"taşın", r"iskân",
+    ],
+    "social": [
+        r"married", r"wife", r"husband", r"son", r"daughter", r"visit", r"men", r"women", r"cousin",
+        r"relative", r"brother", r"sister", r"family", r"kinship",
+        r"aile", r"oğul", r"akraba", r"komşu", r"muhtar", r"kabile", r"torun", r"kadın", r"erkek",
+    ],
+    "burial": [
+        r"burial", r"grave", r"funeral", r"cemeter", r"buried", r"death", r"died", r"tomb",
+        r"mezarlık", r"mezar", r"cenaze", r"defin", r"ölüm",
+    ],
+    "religion": [
+        r"mosque", r"church", r"prayer", r"religion", r"islam", r"muslim", r"christian", r"alevi",
+        r"holy", r"sacred", r"ritual", r"ceremony",
+        r"cami", r"namaz", r"dua", r"müslüman", r"ramazan", r"bayram", r"tekke", r"türbe",
+    ],
+    "economy": [
+        r"tax", r"price", r"market", r"income", r"money", r"cost", r"sell", r"buy", r"trade",
+        r"fiyat", r"pazar", r"para", r"gelir", r"vergi", r"ticaret", r"satış",
+    ],
+    "archaeology": [
+        r"excavation", r"excavate", r"trench", r"stratigraphy", r"context", r"layer", r"dig",
+        r"survey", r"site", r"artifact", r"pottery", r"lithic", r"ceramic", r"bone", r"architecture",
+        r"kazı", r"arkeoloji", r"çanak", r"seramik", r"buluntu", r"tabaka", r"höyük",
+    ],
+    "artifacts": [
+        r"artifact", r"pottery", r"ceramic", r"lithic", r"tool", r"vessel", r"ornament",
+        r"bead", r"metal", r"shard", r"bone",
+        r"çanak", r"seramik", r"buluntu",
+    ],
+    "architecture": [
+        r"building", r"wall", r"house", r"structure", r"ruin", r"room", r"foundation",
+        r"mudbrick", r"stone", r"architecture", r"settlement", r"courtyard",
+    ],
+    "landscape": [
+        r"landscape", r"topography", r"hill", r"valley", r"mound", r"survey", r"plain",
+        r"plateau", r"terrace", r"site",
+        r"tepe", r"vadi", r"ova", r"dağ", r"nehir", r"höyük",
+    ],
+    "cultural": [
+        r"tradition", r"custom", r"celebration", r"festival", r"ritual", r"ceremony",
+        r"dance", r"music", r"song", r"craft",
+        r"gelenek", r"görenek", r"düğün", r"türkü",
+    ],
 }
 
 

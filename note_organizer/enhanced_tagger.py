@@ -7,50 +7,92 @@ import re
 from pathlib import Path
 
 
-# Enhanced tag patterns with more keywords
+# Enhanced tag patterns with more keywords (English + Turkish)
 ENHANCED_TAG_PATTERNS = {
     "ethnicity": [
-        r"ethnic", r"ethnicity", r"kurd", r"turk", r"alevi", r"y[öo]rük", 
-        r"roma", r"circass", r"armen", r"arab", r"tatar", r"laz", r"greek"
+        r"ethnic", r"ethnicity", r"kurd", r"turk", r"alevi", r"y[öo]rük",
+        r"roma", r"circass", r"armen", r"arab", r"tatar", r"laz", r"greek",
+        # Turkish
+        r"kürt", r"çerkes", r"göçebe", r"boşnak", r"rum",
     ],
     "herding": [
-        r"herd", r"shepherd", r"sheep", r"cattle", r"goat", r"grazing", 
-        r"flock", r"pastur", r"livestock", r"animal", r"dairy", r"nomad"
+        r"herd", r"shepherd", r"sheep", r"cattle", r"goat", r"grazing",
+        r"flock", r"pastur", r"livestock", r"animal", r"dairy", r"nomad",
+        # Turkish
+        r"hayvancılık", r"koyun", r"keçi", r"inek", r"sığır", r"sürü",
+        r"ağıl", r"mera", r"otlak", r"davar", r"büyükbaş", r"küçükbaş",
+        r"çoban",
     ],
     "agriculture": [
-        r"farm", r"farming", r"crop", r"wheat", r"barley", r"soil", r"tractor", 
-        r"plow", r"planting", r"harvest", r"vegetable", r"garden", r"soil",
-        r"field", r"irrigation", r"seed", r"agr"
+        r"farm", r"farming", r"crop", r"wheat", r"barley", r"soil", r"tractor",
+        r"plow", r"planting", r"harvest", r"vegetable", r"garden",
+        r"field", r"irrigation", r"seed", r"agr",
+        # Turkish
+        r"tarım", r"buğday", r"arpa", r"ekim", r"hasat", r"tarla",
+        r"sulama", r"çiftçi", r"bahçe", r"meyve", r"sebze", r"pancar",
+        r"traktör",
     ],
     "household": [
-        r"cook", r"kitchen", r"dairy", r"cheese", r"butter", r"milk", 
-        r"home", r"household", r"family", r"domestic", r"meal", r"food"
+        r"cook", r"kitchen", r"dairy", r"cheese", r"butter", r"milk",
+        r"home", r"household", r"family", r"domestic", r"meal", r"food",
+        # Turkish
+        r"mutfak", r"peynir", r"tereyağ", r"yoğurt", r"yemek", r"pişir",
+        r"hane",
     ],
     "migration": [
         r"migrat", r"settle", r"move", r"village", r"relocat", r"immigrant",
-        r"travel", r"nomadic", r"seasonal", r"movement"
+        r"travel", r"nomadic", r"seasonal", r"movement",
+        # Turkish
+        r"göç", r"yerleş", r"taşın", r"iskân",
     ],
     "social": [
-        r"married", r"wife", r"husband", r"son", r"daughter", r"visit", 
-        r"wife", r"men", r"women", r"cousin", r"relative", r"brother", 
-        r"sister", r"family", r"kinship", r"social"
+        r"married", r"wife", r"husband", r"son", r"daughter", r"visit",
+        r"men", r"women", r"cousin", r"relative", r"brother",
+        r"sister", r"family", r"kinship", r"social",
+        # Turkish
+        r"aile", r"oğul", r"akraba", r"komşu", r"muhtar", r"kabile",
+        r"torun", r"kadın", r"erkek",
     ],
     "burial": [
-        r"burial", r"grave", r"funeral", r"cemeter", r"buried", r"death", 
-        r"died", r"tomb", r"mourning"
+        r"burial", r"grave", r"funeral", r"cemeter", r"buried", r"death",
+        r"died", r"tomb", r"mourning",
+        # Turkish
+        r"mezarlık", r"mezar", r"cenaze", r"defin", r"ölüm",
     ],
     "religion": [
-        r"mosque", r"church", r"prayer", r"religion", r"islam", r"muslim", 
+        r"mosque", r"church", r"prayer", r"religion", r"islam", r"muslim",
         r"christian", r"alevi", r"holy", r"sacred", r"faith", r"spiritual",
-        r"ritual", r"ceremony"
+        r"ritual", r"ceremony",
+        # Turkish
+        r"cami", r"namaz", r"dua", r"müslüman", r"ramazan", r"bayram",
+        r"tekke", r"türbe",
     ],
     "economy": [
-        r"tax", r"price", r"market", r"income", r"money", r"cost", r"sell", 
-        r"buy", r"trade", r"commerce", r"economic", r"business", r"commerce"
+        r"tax", r"price", r"market", r"income", r"money", r"cost", r"sell",
+        r"buy", r"trade", r"commerce", r"economic", r"business",
+        # Turkish
+        r"fiyat", r"pazar", r"para", r"gelir", r"vergi", r"ticaret",
+        r"satış", r"alım",
     ],
     "cultural": [
-        r"tradition", r"custom", r"celebration", r"festival", r"ritual", 
-        r"ceremony", r"dance", r"music", r"song", r"art", r"craft", r"cultural"
+        r"tradition", r"custom", r"celebration", r"festival", r"ritual",
+        r"ceremony", r"dance", r"music", r"song", r"art", r"craft", r"cultural",
+        # Turkish
+        r"gelenek", r"görenek", r"düğün", r"türkü", r"dans",
+    ],
+    "archaeology": [
+        r"excavation", r"excavate", r"trench", r"stratigraphy", r"context",
+        r"layer", r"dig", r"survey", r"artifact", r"pottery", r"lithic",
+        r"ceramic", r"bone", r"architecture",
+        # Turkish
+        r"kazı", r"arkeoloji", r"çanak", r"seramik", r"buluntu", r"tabaka",
+        r"höyük",
+    ],
+    "landscape": [
+        r"landscape", r"topography", r"hill", r"valley", r"mound", r"survey",
+        r"plain", r"plateau", r"terrace", r"site",
+        # Turkish
+        r"tepe", r"vadi", r"ova", r"dağ", r"nehir",
     ],
 }
 

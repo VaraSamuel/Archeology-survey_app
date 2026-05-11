@@ -373,6 +373,7 @@ def preview_note_from_drive(note: Dict[str, Any]) -> Dict[str, Any]:
         "preview_type": preview_type,
         "can_inline_preview": can_inline_preview,
         "content": content,
+        "drive_id": note.get("drive_id", ""),
     }
 
 
@@ -573,6 +574,24 @@ async def get_categories():
         }
 
     return cats
+
+
+@app.get("/api/tag-patterns")
+async def get_tag_patterns():
+    """Return TAG_PATTERNS dict mapping tag names to their regex pattern strings."""
+    from organizer import TAG_PATTERNS
+    return TAG_PATTERNS
+
+
+@app.get("/api/tag-to-category")
+async def get_tag_to_category():
+    """Return a flat {tag: category_key} mapping for all known tags."""
+    mapping = {}
+    for cat_key, cat_info in analyzer.CATEGORIES.items():
+        mapping[cat_key] = cat_key
+        for pattern in cat_info.get("patterns", []):
+            mapping[pattern.lower()] = cat_key
+    return mapping
 
 
 @app.get("/api/notes")
@@ -1264,6 +1283,13 @@ HTML_TEMPLATE = r"""
             min-height: 100%;
         }
 
+        mark {
+            background: #fff176;
+            color: inherit;
+            border-radius: 2px;
+            padding: 0 1px;
+        }
+
         .path-line {
             font-size: 12px;
             color: #83786c;
@@ -1376,6 +1402,7 @@ HTML_TEMPLATE = r"""
                     <a class="button-link green small-btn" id="viewer-download" href="#" target="_blank">Download</a>
                     <a class="button-link blue small-btn" id="viewer-full-page" href="#" target="_blank">Open Page</a>
                     <a class="button-link secondary small-btn" id="viewer-raw" href="#" target="_blank">Raw File</a>
+                    <a class="button-link secondary small-btn" id="viewer-edit-drive" href="#" target="_blank" style="display:none">Edit in Drive</a>
                     <button class="red small-btn" onclick="closeViewer()">Close</button>
                 </div>
             </div>
@@ -1390,6 +1417,8 @@ HTML_TEMPLATE = r"""
 
     <script>
         let categoriesCache = {};
+        let tagPatternsCache = {};
+        let tagToCategoryCache = {};
         let filterTimer = null;
 
         async function init() {
@@ -1397,6 +1426,7 @@ HTML_TEMPLATE = r"""
                 await loadStats();
                 await loadYears();
                 await loadCategories();
+                await loadTagPatterns();
                 await filterNotes();
             } catch (err) {
                 console.error('Init error:', err);
@@ -1453,6 +1483,11 @@ HTML_TEMPLATE = r"""
                 option.textContent = year;
                 yearSelect.appendChild(option);
             });
+        }
+
+        async function loadTagPatterns() {
+            tagPatternsCache = await apiGet('/api/tag-patterns');
+            tagToCategoryCache = await apiGet('/api/tag-to-category');
         }
 
         async function loadCategories() {
@@ -1592,6 +1627,7 @@ HTML_TEMPLATE = r"""
                             <a class="button-link blue small-btn" href="/api/note/${encodeURIComponent(noteId)}/view" target="_blank">Open Page</a>
                             <a class="button-link green small-btn" href="/api/note/${encodeURIComponent(noteId)}/download">Download</a>
                             <a class="button-link secondary small-btn" href="/api/note/${encodeURIComponent(noteId)}/raw" target="_blank">Raw</a>
+                            ${note.drive_id ? `<a class="button-link secondary small-btn" href="https://drive.google.com/file/d/${note.drive_id}/view" target="_blank">Edit in Drive</a>` : ''}
                         </div>
                     </div>
                 `;
@@ -1600,18 +1636,56 @@ HTML_TEMPLATE = r"""
             container.innerHTML = html;
         }
 
+        function highlightKeywords(rawText, tags) {
+            if (!rawText) return '';
+            const escaped = escapeHtml(rawText);
+            if (!tags || tags.length === 0) return escaped;
+
+            const patterns = [];
+            tags.forEach(tag => {
+                const tagPs = tagPatternsCache[tag];
+                if (tagPs && tagPs.length) {
+                    tagPs.forEach(p => patterns.push(p));
+                } else {
+                    patterns.push(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+                }
+            });
+
+            if (patterns.length === 0) return escaped;
+
+            const unique = [...new Set(patterns)].sort((a, b) => b.length - a.length);
+            try {
+                const parts = unique.map(p => {
+                    // Short patterns (≤3 chars) get word boundaries on both sides:
+                    //   "son" → \bson\b  so it won't match "person", "season"
+                    //   "men" → \bmen\b  so it won't match "mentioned", "implement"
+                    // Longer patterns get only a start boundary so suffixes still match:
+                    //   "herd" → \bherd  still matches "herding", "herdsman"
+                    //   "pastur" → \bpastur  still matches "pasture"
+                    const endBound = p.length <= 3 ? '\\b' : '';
+                    return `\\b(?:${p})${endBound}`;
+                });
+                const regex = new RegExp(`(${parts.join('|')})`, 'gi');
+                return escaped.replace(regex, '<mark>$1</mark>');
+            } catch (e) {
+                return escaped;
+            }
+        }
+
         async function openViewer(noteId) {
             const backdrop = document.getElementById('viewer-backdrop');
             const title = document.getElementById('viewer-title');
             const meta = document.getElementById('viewer-meta');
             const pathLine = document.getElementById('viewer-path');
             const content = document.getElementById('viewer-content');
+            const editBtn = document.getElementById('viewer-edit-drive');
 
             backdrop.style.display = 'flex';
             title.textContent = 'Loading...';
             meta.textContent = '';
             pathLine.textContent = '';
             content.textContent = 'Loading note text...';
+            editBtn.style.display = 'none';
 
             try {
                 const note = await apiGet(`/api/note/${encodeURIComponent(noteId)}`);
@@ -1619,11 +1693,24 @@ HTML_TEMPLATE = r"""
                 title.textContent = note.title || 'Untitled';
                 meta.textContent = `Year: ${note.year || 'Unknown'} | Source: ${note.source || 'Unknown'} | File: ${note.filename || ''} | Preview: ${note.preview_type}`;
                 pathLine.textContent = note.path || '';
-                content.textContent = note.content || '(No preview text available.)';
+
+                // If a category filter is active, only highlight tags belonging to that category
+                const activeCategory = document.getElementById('category-filter').value;
+                let tagsForHighlight = note.tags || [];
+                if (activeCategory) {
+                    const filtered = tagsForHighlight.filter(t => tagToCategoryCache[t.toLowerCase()] === activeCategory);
+                    if (filtered.length > 0) tagsForHighlight = filtered;
+                }
+                content.innerHTML = highlightKeywords(note.content || '(No preview text available.)', tagsForHighlight);
 
                 document.getElementById('viewer-download').href = `/api/note/${encodeURIComponent(noteId)}/download`;
                 document.getElementById('viewer-full-page').href = `/api/note/${encodeURIComponent(noteId)}/view`;
                 document.getElementById('viewer-raw').href = `/api/note/${encodeURIComponent(noteId)}/raw`;
+
+                if (note.drive_id) {
+                    editBtn.href = `https://drive.google.com/file/d/${note.drive_id}/view`;
+                    editBtn.style.display = 'inline-flex';
+                }
             } catch (error) {
                 title.textContent = 'Could not load note';
                 content.textContent = error.message;
